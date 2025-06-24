@@ -1,203 +1,54 @@
 # DataBaseManager
 
-## Overview
+## 1. Non‑technical overview
 
-DataBaseManager is a command line project written in Java that manages a small quiz system. It was originally created as a university assignment and demonstrates how to keep track of users, questions, quizzes and their submissions using simple text files.
+DataBaseManager is a small console application built in Java for a third‑year university project. It lets you create users, add questions, assemble quizzes and record solutions entirely from the command line. All information is saved in plain CSV files which are loaded into memory when the program starts.
 
-The application accepts commands such as creating users or quizzes, retrieving question lists and submitting answers. All data is stored in comma separated value (CSV) files and is loaded into memory on start. After each operation the files are rewritten so the state remains persistent.
+Keeping the data in CSV rather than a full database was intentional: it means the program runs with only a few megabytes of memory and no external services. For the sample data set of a few hundred entries each command completes in well under a second on standard hardware.
 
-### Example usage
-
-Below are a few simplified examples of how commands can be invoked:
+Typical usage looks like this:
 
 ```bash
-# create a new user
+# create a user
 java Tema1 --create-user --u 'john' --p 'doe'
 
-# add a question owned by john
-java Tema1 --create-question --u 'john' --p 'doe' --text '2+2?' --type 'single' --answer-1 '4' --answer-1-is-correct '1' --answer-2 '3' --answer-2-is-correct '0'
-
-# create a quiz with the newly added question
-java Tema1 --create-quizz --u 'john' --p 'doe' --name 'math' --question-1 1
+# add a question owned by that user
+java Tema1 --create-question --u 'john' --p 'doe' --text '2+2?' --type 'single' --answer-1 '4' --answer-1-is-correct '1'
 ```
 
-By relying only on plain CSV files and a minimal runtime, the program uses very little memory (only a few megabytes with the provided test data) and avoids the overhead of a full database server.
+Once quizzes are created, participants can submit answers and the program will calculate a score.
 
-## Technical details
+## 2. Technical details
 
-The code is built around a generic `DataBase` class that loads CSV rows into lists of Java objects. Each specific database (users, questions, quizzes and submissions) inherits from this class and implements the conversion logic. The core of the class is shown below:
+### Data model and storage
 
+The project defines four models (`User`, `Question`, `Quiz`, `Submission`) that all implement a small `IModel` interface. They are managed by a generic class called `DataBase<T>` which loads and writes CSV files. Each specific database (for example `UserDB`) inherits from it and only implements conversion logic. This keeps the code compact and reduces duplication.
 
 ```java
-    public abstract class DataBase<Model extends IModel>
-    {
-        protected abstract Model ConvertToModel(String line);
-        protected abstract String ConvertToString(Model obj);
-        protected abstract String GetDbHeader();
-        protected abstract Integer GetId();
-        protected abstract void SetId(Integer id);
-    
-        private List<Model> db = null;
-    
-        public void Load(String fileName)
-        {
-            SetId(1);
-            try (BufferedReader br = new BufferedReader(new FileReader(fileName)))
-            {
-                this.db = new ArrayList<>();
-                String line = br.readLine(); ///ignore the header
-                while ((line = br.readLine()) != null)
-                {
-                    Model instance = ConvertToModel(line);
-                    instance.setId(GetId());
-                    this.db.add(instance);
-    ...
-        }
-    
-        public void Clean(String fileName)
-        {
-            try (FileWriter fw = new FileWriter(fileName);
-                 BufferedWriter bw = new BufferedWriter(fw);
-                 PrintWriter out = new PrintWriter(bw))
-            {
-                out.println(GetDbHeader());
-            } catch (IOException e) {
-                e.printStackTrace();
-            }
-        }
-    
-        public void ResetIds()
-        {
-            for(int i = 0; i < this.db.size(); i++)
-                this.db.get(i).setId(i + 1);
-            SetId(this.db.size());
-        }
+public abstract class DataBase<T extends IModel> {
+    public void Load(String fileName) { /* parse CSV */ }
+    public void WriteBack(File file) { /* export CSV */ }
+}
 ```
 
-This class exposes helper methods such as `GetIf` and `WriteBack` and keeps a simple list in memory.
+The CSV data is read once at startup so all queries are performed in memory. Because the project targets small files, a simple linear search through lists is more than fast enough.
 
-The arguments passed to the program are parsed with a small utility:
+### Command parsing and output
+
+A lightweight argument parser splits the command line into a command and key‑value arguments. Responses are produced through a minimal JSON builder so the output can easily be consumed by other scripts. Below is an abbreviated outline of the parser:
 
 ```java
-        public static Args Parse(String[] arguments)
-        {
-            Args args = new Args();
-            args.command = arguments[0].substring(1);
-            args.arguments = new HashMap<>();
-    
-            for( int i = 1; i < arguments.length; i ++ )
-            {
-                String argumentKey;
-                if( arguments[i].contains("'") )
-                    argumentKey = arguments[i].substring(1, arguments[i].indexOf('\'') - 1);
-                else
-                    argumentKey = arguments[i].split(" ")[0].substring(1);
-    
-                String argumentValue;
-                if(arguments[i].contains("'"))
-                    argumentValue = arguments[i].substring(arguments[i].indexOf('\'') + 1, arguments[i].length() - 1);
-                else
-                    argumentValue = arguments[i].split(" ")[0];
-    
-                args.arguments.put(argumentKey, argumentValue);
-            }
+Args args = ArgParser.Parse(arguments);
 ```
 
-A lightweight JSON builder is used to format responses:
+### Scoring algorithm
 
-```java
-    package utils.JSON;
-    
-    import java.util.*;
-    
-    public class JSON
-    {
-        private final SortedMap<String, Object> attributes;
-        private final Boolean responseJson;
-        private final Boolean spaced;
-        private final String[] relativeOrder;
-    
-        public JSON()
-        {
-            this(true, null, true);
-        }
-        public JSON(boolean responseJson)
-        {
-            this(responseJson, null, true);
-        }
-        public JSON(boolean responseJson, String[] relativeOrder, boolean spaced)
-        public JSON(boolean responseJson, String[] relativeOrder, boolean spaced)
-        {
-            attributes = new TreeMap<>();
-            this.responseJson = responseJson;
-            this.relativeOrder = relativeOrder;
-            this.spaced = spaced;
-        }
-    
-        public void put(String key, Object value)
-        {
-            attributes.put(key, value);
-        }
-    
-        @Override
-        public String toString()
-        {
-            if( responseJson )
-                return "{" + "'status'" + ":'" + attributes.get("status") + "'" + "," + "'message'" + ":'" + attributes.get("message") + "'" + "}";
-    
-            StringBuilder jsonText = new StringBuilder("{");
-            if( relativeOrder == null )
-                for( String key : attributes.keySet() )
-                for( String key : attributes.keySet() )
-                    jsonText.append("\"").append(key).append("\"").append(spaced ? " : \"" : ":\"").append(attributes.get(key).toString()).append("\"").append(", ");
-            else
-            {
-                for( String key : relativeOrder )
-                    jsonText.append("\"").append(key).append("\"").append(spaced ? " : \"" : ":\"").append(attributes.get(key).toString()).append("\"").append(", ");
-                for( String key : attributes.keySet() )
-                    if(!Arrays.asList(relativeOrder).contains(key))
-                        jsonText.append("\"").append(key).append("\"").append(spaced ? " : \"" : ":\"").append(attributes.get(key).toString()).append("\"").append(", ");
-            }
-    
-    
-            jsonText.deleteCharAt(jsonText.length() - 1);
-            jsonText.deleteCharAt(jsonText.length() - 1);
-            jsonText.append("}");
-            return jsonText.toString();
-        }
-        public static JSON Error(String message)
-        {
-            JSON json = new JSON();
-            json.put("status", "error");
-            json.put("message", message);
-            return json;
-        }
-    
-        public static JSON Ok(String message)
-        {
-            JSON json = new JSON();
-            json.put("status", "ok");
-            json.put("message", message);
-            return json;
-        }
-```
+When a quiz is submitted, each question distributes a fraction of one point over its answers. Correct answers add to the score while wrong answers subtract, and the final percentage is clamped to zero to avoid negative results. For small quizzes (ten questions or fewer) this computation is instantaneous.
 
-Answers receive a unique identifier when instantiated:
+### Running the project
 
-```java
-    package models;
-    
-    public class Answer
-    {
-        public static Integer generalID = 0;
-        public Integer ID;
-        public String text;
-        public Boolean isCorrect;
-    
-        public Answer()
-        {
-            this.ID = generalID++;
-        }
-```
+Compile everything with `javac` and run `Tema1` with the desired command as shown above. The provided CSV files inside `src/database` hold the current state of users, questions, quizzes and submissions.
 
-This repository served as a practical exercise in object oriented design and basic persistence without relying on external databases.
+---
+
+This repository served as practice in object‑oriented design and in handling simple persistence without requiring extra dependencies.
